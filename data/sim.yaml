@@ -1,0 +1,99 @@
+cluster:
+  compute_nodes: 4
+  memory_nodes: 2
+  threads_per_compute: 16
+  cs_cache_bytes: 268435456  # 256 MiB per compute node
+  ms_cpu_cores: 2
+
+nic:
+  link_gbps: 100
+  base_rtt_us: 2.0
+  per_byte_us: 0.00001
+  cas_onchip_rtt_us: 0.7
+  iops_caps_per_qp:
+    cas: 120000000
+    read_small: 8500000
+    write_small: 9000000
+  qp_per_thread: 1
+  in_order_rc: true
+  # Advanced NIC
+  tb_cas_ops_per_s: 120000000
+  tb_read_ops_per_s: 8500000
+  tb_write_ops_per_s: 9000000
+  tb_burst_ops: 64
+  small_threshold: 256
+  pcie_doorbell_us: 0.25
+  pcie_desc_us: 0.03
+  doorbell_batch_limit: 16
+  sq_depth: 512
+
+memory_server:
+  rnic_onchip_bytes: 262144
+  dram_latency_us: 0.6
+
+index:
+  kind: "sherman"            # "sherman" | "dex"
+  node_bytes: 4096
+  leaf_entry_bytes: 24
+  ablations:
+    sherman:
+      disable_combine: false
+      disable_hocl: false
+      disable_versions: false
+    dex:
+      disable_partitioning: false
+      disable_path_cache: false
+      disable_offload: false
+
+sherman:
+  combine_commands: true
+  hocl:
+    enable: true
+    glt_slots: 131072
+    llt_enable: true
+  two_level_versioning: true
+  cache_levels: 2
+  # Advanced Sherman fidelity
+  glt_hash_seed: 266681
+  cas_max_retries: 16
+  cas_backoff_us: 0.5
+  model_glt_collisions: true
+  leaf_max_entries: -1           # default: node_bytes/leaf_entry_bytes
+  split_threshold: 0.95
+  merge_threshold: 0.30
+  enable_splits: true
+  enable_merges: false
+  enable_two_level_versions: true
+
+dex:
+  logical_partitioning: true
+  path_aware_cache: true
+  offload:
+    enable: true
+    ms_cpu_budget_ops_per_s: 3000000
+  # Advanced DEX knobs
+  num_partitions: 256
+  repartition_period_ms: 250.0
+  repartition_topK: 8
+  remap_broadcast_us: 100.0
+  cache_inval_prob: 0.25
+
+workloads:
+  - name: "ycsb-a"
+    ops: 200000
+    mix: { read: 0.5, write: 0.5 }
+    keyspace: 1000000
+    zipf: 0.9
+    range_len: 1
+
+  - name: "range-95r5w-short"
+    ops: 100000
+    mix: { read: 0.95, write: 0.05 }
+    keyspace: 2000000
+    zipf: 0.6
+    range_len: 32
+
+metrics:
+  ptiles: [50,95,99]
+  dump_per_op_trace: true
+  out_dir: "out"
