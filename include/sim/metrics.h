@@ -30,6 +30,7 @@ struct Metrics {
     recv_ops = 0;
     bytes_read = 0;
     bytes_write = 0;
+    hopscotch_hits = 0;
     lat_us.clear();
     trace_enabled = false;
     if (trace.is_open()) trace.close();
@@ -37,6 +38,7 @@ struct Metrics {
   std::atomic<std::uint64_t> ops{0};
   std::atomic<std::uint64_t> remote_reads{0}, remote_writes{0}, remote_cas{0}, send_ops{0}, recv_ops{0};
   std::atomic<std::uint64_t> bytes_read{0}, bytes_write{0};
+  std::atomic<std::uint64_t> hopscotch_hits{0}; // Sprint 2: hopscotch overlay hits
   std::mutex lat_m; Hist lat_us;
 
   // Optional per-op CSV trace

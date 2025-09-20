@@ -15,6 +15,7 @@ add_library(simlib
   src/cache.cc
   src/locks.cc
   src/rdwc.cc
+  src/hopscotch.cc
   src/index_sherman.cc
   src/workload.cc)
 

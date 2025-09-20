@@ -145,8 +145,27 @@ void Sherman::delegate_get_impl(std::uint64_t key, Metrics& m, std::uint64_t op_
   SimTime start = ctx.loop->now, done = start; std::uint64_t br0=m.bytes_read, bw0=m.bytes_write; auto rr0=m.remote_reads.load(), rw0=m.remote_writes.load(), rc0=m.remote_cas.load();
   std::vector<std::uint64_t> nodes; auto leaf = path_to_leaf(key, nodes);
   for (int lvl=0; lvl<(int)nodes.size(); ++lvl) read_node(nodes[lvl], lvl, m, done);
-  RdmaReq r{Verb::READ, Target::DRAM, ctx.leaf_entry_bytes, ctx.qp, ctx.cs_id, ctx.ms_id};
-  auto c = ctx.nic->post(r); done = std::max(done, c.when); m.remote_reads++; m.bytes_read += ctx.leaf_entry_bytes;
+  
+  // Track leaf access for hopscotch overlay management
+  hopscotch_track_leaf_access(leaf);
+  hopscotch_maybe_create_overlay(leaf, m);
+  
+  // Try hopscotch overlay probe first (if enabled and overlay exists)
+  int hopscotch_slot = hopscotch_probe_overlay(leaf, key, m);
+  std::uint64_t entry_bytes_to_read = ctx.leaf_entry_bytes;
+  
+  if (hopscotch_slot >= 0) {
+    // Overlay hit! We know the exact slot, so we can read just that entry
+    // This reduces bytes read compared to full leaf scan
+    // TODO: For now, still read full entry for compatibility
+    // Future optimization: could read just the specific slot offset
+  } else {
+    // Overlay miss or no overlay - need to read entry for scanning
+    // This is the traditional path
+  }
+  
+  RdmaReq r{Verb::READ, Target::DRAM, entry_bytes_to_read, ctx.qp, ctx.cs_id, ctx.ms_id};
+  auto c = ctx.nic->post(r); done = std::max(done, c.when); m.remote_reads++; m.bytes_read += entry_bytes_to_read;
 
   // Version validation (node-level then entry-level)
   auto& meta = leafs[leaf]; if (meta.entry_ver.empty()) meta.entry_ver.resize(leaf_capacity(), 0);
@@ -234,12 +253,21 @@ void Sherman::delegate_put_impl(std::uint64_t key, Metrics& m, std::uint64_t op_
   if (conf.enable_two_level_versions) { meta.entry_ver[idx]++; }
   meta.node_ver++;
   meta.entries = std::min(leaf_capacity(), meta.entries + 1);
+  
+  // Update hopscotch overlay with the new/updated key
+  hopscotch_track_leaf_access(leaf);
+  hopscotch_maybe_create_overlay(leaf, m);
+  hopscotch_update_overlay(leaf, key, idx);
 
   // Split if above threshold
   if (conf.enable_splits && meta.entries >= (int)(conf.split_threshold * leaf_capacity())){
     std::uint64_t sib = leaf ^ 0x5bd1e995u;
     auto& sm = leafs[sib]; if (sm.entry_ver.empty()) sm.entry_ver.resize(leaf_capacity(), 0);
     int moved = meta.entries / 2; meta.entries -= moved; sm.entries += moved; meta.node_ver++; sm.node_ver++;
+    
+    // Clear hopscotch overlays on split since entries moved between leaves
+    if (meta.overlay) meta.overlay->clear();
+    if (sm.overlay) sm.overlay->clear();
 
     if (conf.enable_two_level_versions){
       RdmaReq wsib{Verb::WRITE, Target::DRAM, ctx.node_bytes, ctx.qp, ctx.cs_id, ctx.ms_id};
@@ -250,4 +278,63 @@ void Sherman::delegate_put_impl(std::uint64_t key, Metrics& m, std::uint64_t op_
   }
 
   ctx.loop->at(done, [&, start, done, op_id, rr0, rw0, rc0, br0, bw0]{ m.ops++; double lat=done-start; m.add_latency(lat); m.dump_op(op_id, "PUT", lat, m.remote_reads-rr0, m.remote_writes-rw0, m.remote_cas-rc0, 0, 0, m.bytes_read-br0, m.bytes_write-bw0); });
+}
+
+// Hopscotch overlay methods
+void Sherman::hopscotch_maybe_create_overlay(std::uint64_t leaf_id, Metrics& m) {
+  if (!conf.hopscotch.enable) return;
+  
+  auto& meta = leafs[leaf_id];
+  
+  // Create overlay if it doesn't exist and this leaf is hot enough
+  if (!meta.overlay && meta.access_count > 100) { // Simple threshold for now
+    meta.overlay = std::make_unique<hopscotch::HopscotchOverlay>(
+      conf.hopscotch.H, conf.hopscotch.slots_per_leaf);
+      
+    // TODO: Could populate overlay by scanning leaf contents
+    // For now, start with empty overlay that gets populated on subsequent accesses
+  }
+}
+
+void Sherman::hopscotch_update_overlay(std::uint64_t leaf_id, std::uint64_t key, int leaf_slot) {
+  if (!conf.hopscotch.enable) return;
+  
+  auto& meta = leafs[leaf_id];
+  if (meta.overlay) {
+    bool success = meta.overlay->insert(key, leaf_slot);
+    if (!success && meta.overlay->utilization() > conf.hopscotch.rebuild_threshold) {
+      // Overlay is full, consider rebuilding or disabling for this leaf
+      meta.overlay->clear();
+    }
+  }
+}
+
+void Sherman::hopscotch_remove_from_overlay(std::uint64_t leaf_id, std::uint64_t key) {
+  if (!conf.hopscotch.enable) return;
+  
+  auto& meta = leafs[leaf_id];
+  if (meta.overlay) {
+    meta.overlay->remove(key);
+  }
+}
+
+int Sherman::hopscotch_probe_overlay(std::uint64_t leaf_id, std::uint64_t key, Metrics& m) {
+  if (!conf.hopscotch.enable) return -1;
+  
+  auto& meta = leafs[leaf_id];
+  if (!meta.overlay) return -1;
+  
+  int leaf_slot = meta.overlay->lookup(key);
+  if (leaf_slot >= 0) {
+    // Overlay hit! This saves us from scanning the full leaf
+    m.hopscotch_hits++; // Add this metric if not already tracked
+  }
+  return leaf_slot;
+}
+
+void Sherman::hopscotch_track_leaf_access(std::uint64_t leaf_id) {
+  if (!conf.hopscotch.enable) return;
+  
+  auto& meta = leafs[leaf_id];
+  meta.access_count++;
 }

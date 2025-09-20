@@ -46,6 +46,14 @@ SimConf LoadConfig(const std::string& path){
       c.index.sh.rdwc.collision_policy = (policy == "bypass") ? 
         ShermanConf::rdwc_t::CollisionPolicy::BYPASS : ShermanConf::rdwc_t::CollisionPolicy::QUEUE;
     }
+    if (auto hop = sh["hopscotch"]) {
+      c.index.sh.hopscotch.enable = hop["enable"].as<bool>(c.index.sh.hopscotch.enable);
+      c.index.sh.hopscotch.H = hop["H"].as<int>(c.index.sh.hopscotch.H);
+      c.index.sh.hopscotch.slots_per_leaf = hop["slots_per_leaf"].as<int>(c.index.sh.hopscotch.slots_per_leaf);
+      c.index.sh.hopscotch.enable_speculative = hop["enable_speculative"].as<bool>(c.index.sh.hopscotch.enable_speculative);
+      c.index.sh.hopscotch.topK = hop["topK"].as<int>(c.index.sh.hopscotch.topK);
+      c.index.sh.hopscotch.rebuild_threshold = hop["rebuild_threshold"].as<double>(c.index.sh.hopscotch.rebuild_threshold);
+    }
     c.index.sh.two_level_versioning = sh["two_level_versioning"].as<bool>(c.index.sh.two_level_versioning);
     c.index.sh.cache_levels = sh["cache_levels"].as<int>(c.index.sh.cache_levels);
     // advanced

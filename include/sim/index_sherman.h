@@ -5,6 +5,7 @@
 #include "sim/metrics.h"
 #include "sim/config.h"
 #include "sim/rdwc.h"
+#include "sim/hopscotch.h"
 #include <unordered_map>
 
 struct Sherman : public Index {
@@ -15,7 +16,14 @@ struct Sherman : public Index {
   rdwc::DelegationTable delegation_table; // RDWC delegation
 
   // Leaf occupancy & versions
-  struct LeafMeta { int entries{0}; std::uint64_t node_ver{0}; std::vector<std::uint64_t> entry_ver; };
+  struct LeafMeta { 
+    int entries{0}; 
+    std::uint64_t node_ver{0}; 
+    std::vector<std::uint64_t> entry_ver; 
+    // Hopscotch overlay for accelerated lookups
+    std::unique_ptr<hopscotch::HopscotchOverlay> overlay{nullptr};
+    std::uint64_t access_count{0}; // for topK tracking
+  };
   std::unordered_map<std::uint64_t, LeafMeta> leafs; // leaf_id -> meta
 
   Sherman(const IndexCtx& c, ShermanConf sc, std::size_t cache_bytes);
@@ -31,6 +39,13 @@ private:
   // RDWC internal methods
   void delegate_get_impl(std::uint64_t key, Metrics& m, std::uint64_t op_id);
   void delegate_put_impl(std::uint64_t key, Metrics& m, std::uint64_t op_id);
+
+  // Hopscotch overlay methods
+  void hopscotch_maybe_create_overlay(std::uint64_t leaf_id, Metrics& m);
+  void hopscotch_update_overlay(std::uint64_t leaf_id, std::uint64_t key, int leaf_slot);
+  void hopscotch_remove_from_overlay(std::uint64_t leaf_id, std::uint64_t key);
+  int hopscotch_probe_overlay(std::uint64_t leaf_id, std::uint64_t key, Metrics& m);
+  void hopscotch_track_leaf_access(std::uint64_t leaf_id);
 
   int leaf_capacity() const;
   std::uint64_t glt_slot(std::uint64_t leaf) const;

@@ -70,6 +70,16 @@ struct ShermanConf {
     enum CollisionPolicy { BYPASS = 0, QUEUE = 1 } collision_policy{QUEUE};
   } rdwc;
 
+  // Hopscotch hash overlay (CHIME-style) - accelerated leaf lookups
+  struct hopscotch_t {
+    bool enable{false};
+    int H{16}; // neighborhood size
+    int slots_per_leaf{32}; // hash table size per leaf overlay
+    bool enable_speculative{true}; // speculative lookups without leaf lock
+    int topK{8}; // only build overlays for top K hottest leaves
+    double rebuild_threshold{0.7}; // rebuild when utilization exceeds this
+  } hopscotch;
+
   // Advanced fidelity
   unsigned int glt_hash_seed{0x9e3779b9};
   int cas_max_retries{16};
