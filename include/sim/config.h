@@ -63,6 +63,13 @@ struct ShermanConf {
   bool two_level_versioning{true};
   int cache_levels{2};
 
+  // RDWC (Read/Write Delegation with Coalescing) - SMART-style
+  struct rdwc_t {
+    bool enable{false};
+    double window_us{100.0}; // delegation window in microseconds
+    enum CollisionPolicy { BYPASS = 0, QUEUE = 1 } collision_policy{QUEUE};
+  } rdwc;
+
   // Advanced fidelity
   unsigned int glt_hash_seed{0x9e3779b9};
   int cas_max_retries{16};

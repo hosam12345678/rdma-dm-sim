@@ -4,7 +4,16 @@
 #include <cstdlib>
 
 Sherman::Sherman(const IndexCtx& c, ShermanConf sc, std::size_t cache_bytes)
-  : conf(sc), glt(sc.hocl.glt_slots), cache(cache_bytes) { ctx=c; }
+  : conf(sc), glt(sc.hocl.glt_slots), cache(cache_bytes) { 
+  ctx=c; 
+  
+  // Configure RDWC delegation table
+  delegation_table.config.enable = sc.rdwc.enable;
+  delegation_table.config.window_ns = std::chrono::microseconds(static_cast<long>(sc.rdwc.window_us));
+  delegation_table.config.collision_policy = 
+    (sc.rdwc.collision_policy == ShermanConf::rdwc_t::CollisionPolicy::BYPASS) ? 
+    rdwc::DelegationTable::Config::BYPASS : rdwc::DelegationTable::Config::QUEUE;
+}
 
 std::uint64_t Sherman::path_to_leaf(std::uint64_t key, std::vector<std::uint64_t>& nodes){
   std::uint64_t n1 = key >> 32, n2 = key >> 16, leaf = key;
@@ -102,6 +111,37 @@ void Sherman::hocl_release(std::uint64_t leaf, int tid, Metrics& m, SimTime& com
 }
 
 void Sherman::get(std::uint64_t key, Metrics& m, std::uint64_t op_id){
+  if (conf.rdwc.enable) {
+    // Try RDWC delegation
+    auto [is_delegate, entry] = delegation_table.try_delegate_get(key, op_id, 
+      [&](bool success, const std::string& result) {
+        // Waiter callback - operation completed by delegate
+        if (success) {
+          m.ops++;
+          // For simulation, we don't track the actual result content
+          // The delegate already updated the metrics for RDMA operations
+        }
+      });
+    
+    if (!is_delegate) {
+      // This thread is a waiter, delegate will handle the operation
+      return;
+    }
+    
+    // This thread is the delegate, execute the operation
+    delegate_get_impl(key, m, op_id);
+    
+    // Notify waiters
+    std::uint64_t key_hash = std::hash<std::uint64_t>{}(key);
+    delegation_table.complete_delegation(key_hash, true, "success");
+    return;
+  }
+  
+  // Original GET implementation (non-delegated)
+  delegate_get_impl(key, m, op_id);
+}
+
+void Sherman::delegate_get_impl(std::uint64_t key, Metrics& m, std::uint64_t op_id){
   SimTime start = ctx.loop->now, done = start; std::uint64_t br0=m.bytes_read, bw0=m.bytes_write; auto rr0=m.remote_reads.load(), rw0=m.remote_writes.load(), rc0=m.remote_cas.load();
   std::vector<std::uint64_t> nodes; auto leaf = path_to_leaf(key, nodes);
   for (int lvl=0; lvl<(int)nodes.size(); ++lvl) read_node(nodes[lvl], lvl, m, done);
@@ -128,6 +168,40 @@ void Sherman::get(std::uint64_t key, Metrics& m, std::uint64_t op_id){
 }
 
 void Sherman::put(std::uint64_t key, Metrics& m, std::uint64_t op_id){
+  if (conf.rdwc.enable) {
+    // Try RDWC delegation for writes
+    auto [is_delegate, entry] = delegation_table.try_delegate_put(key, op_id,
+      [this, key, &m, op_id]() {
+        // This lambda will be executed by the delegate
+        delegate_put_impl(key, m, op_id);
+      });
+    
+    if (!is_delegate) {
+      // This thread's write was combined with the delegate's
+      return;
+    }
+    
+    // This thread is the delegate - execute combined writes
+    if (entry && !entry->pending_writes.empty()) {
+      for (auto& write_op : entry->pending_writes) {
+        write_op(); // Execute each combined write
+      }
+    } else {
+      // Single write case
+      delegate_put_impl(key, m, op_id);
+    }
+    
+    // Complete delegation
+    std::uint64_t key_hash = std::hash<std::uint64_t>{}(key);
+    delegation_table.complete_delegation(key_hash, true, "success");
+    return;
+  }
+  
+  // Original PUT implementation (non-delegated)
+  delegate_put_impl(key, m, op_id);
+}
+
+void Sherman::delegate_put_impl(std::uint64_t key, Metrics& m, std::uint64_t op_id){
   SimTime start = ctx.loop->now, done = start; int tid = 0; std::uint64_t br0=m.bytes_read, bw0=m.bytes_write; auto rr0=m.remote_reads.load(), rw0=m.remote_writes.load(), rc0=m.remote_cas.load();
   std::vector<std::uint64_t> nodes; auto leaf = path_to_leaf(key, nodes);
   for (int lvl=0; lvl<(int)nodes.size(); ++lvl) read_node(nodes[lvl], lvl, m, done);

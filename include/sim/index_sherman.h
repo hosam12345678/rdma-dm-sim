@@ -4,6 +4,7 @@
 #include "sim/cache.h"
 #include "sim/metrics.h"
 #include "sim/config.h"
+#include "sim/rdwc.h"
 #include <unordered_map>
 
 struct Sherman : public Index {
@@ -11,6 +12,7 @@ struct Sherman : public Index {
   GLT glt;
   LLT llt;
   LRUCache cache;
+  rdwc::DelegationTable delegation_table; // RDWC delegation
 
   // Leaf occupancy & versions
   struct LeafMeta { int entries{0}; std::uint64_t node_ver{0}; std::vector<std::uint64_t> entry_ver; };
@@ -25,6 +27,10 @@ private:
   void hocl_acquire(std::uint64_t leaf, int tid, Metrics& m, SimTime& completion);
   void hocl_release(std::uint64_t leaf, int tid, Metrics& m, SimTime& completion);
   void hocl_release_state_at(std::uint64_t leaf, int tid, SimTime when);
+
+  // RDWC internal methods
+  void delegate_get_impl(std::uint64_t key, Metrics& m, std::uint64_t op_id);
+  void delegate_put_impl(std::uint64_t key, Metrics& m, std::uint64_t op_id);
 
   int leaf_capacity() const;
   std::uint64_t glt_slot(std::uint64_t leaf) const;

@@ -39,6 +39,13 @@ SimConf LoadConfig(const std::string& path){
       c.index.sh.hocl.llt_enable= hocl["llt_enable"].as<bool>(c.index.sh.hocl.llt_enable);
       c.index.sh.hocl.llt_local_wait_us = hocl["llt_local_wait_us"].as<double>(c.index.sh.hocl.llt_local_wait_us);
     }
+    if (auto rdwc = sh["rdwc"]) {
+      c.index.sh.rdwc.enable = rdwc["enable"].as<bool>(c.index.sh.rdwc.enable);
+      c.index.sh.rdwc.window_us = rdwc["window_us"].as<double>(c.index.sh.rdwc.window_us);
+      std::string policy = rdwc["collision_policy"].as<std::string>("queue");
+      c.index.sh.rdwc.collision_policy = (policy == "bypass") ? 
+        ShermanConf::rdwc_t::CollisionPolicy::BYPASS : ShermanConf::rdwc_t::CollisionPolicy::QUEUE;
+    }
     c.index.sh.two_level_versioning = sh["two_level_versioning"].as<bool>(c.index.sh.two_level_versioning);
     c.index.sh.cache_levels = sh["cache_levels"].as<int>(c.index.sh.cache_levels);
     // advanced
