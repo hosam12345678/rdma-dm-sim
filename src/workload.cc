@@ -1,7 +1,6 @@
 #include "sim/workload.h"
 #include "sim/config.h"
 #include "sim/index_sherman.h"
-#include "sim/index_dex.h"
 #include <random>
 #include <filesystem>
 #include <fstream>
@@ -21,20 +20,12 @@ WorkloadRunner::WorkloadRunner(const SimConf& c)
 
 std::unique_ptr<Index> WorkloadRunner::make_index_for_cs(int cs_id, int ms_id, int qp, std::size_t cache_bytes){
   IndexCtx ctx{&loop, &nic, cs_id, ms_id, qp, conf.index.node_bytes, conf.index.leaf_entry_bytes};
-  if (conf.index.kind==IndexKind::Sherman){
-    auto sh = conf.index.sh; // copy
-    // apply ablations
-    if (conf.index.ablations.sherman.disable_combine)  sh.combine = false;
-    if (conf.index.ablations.sherman.disable_hocl)     sh.hocl.enable = false;
-    if (conf.index.ablations.sherman.disable_versions) { sh.enable_two_level_versions = false; sh.two_level_versioning = false; }
-    return std::make_unique<Sherman>(ctx, sh, cache_bytes);
-  } else {
-    auto dx = conf.index.dx; // copy
-    if (conf.index.ablations.dex.disable_partitioning) dx.logical_partitioning = false;
-    if (conf.index.ablations.dex.disable_path_cache)   dx.path_aware_cache = false;
-    if (conf.index.ablations.dex.disable_offload)      dx.offload.enable = false;
-    return std::make_unique<Dex>(ctx, dx, cache_bytes, conf.cluster.compute_nodes, dx.offload.ms_cpu_budget_ops_per_s);
-  }
+  auto sh = conf.index.sh; // copy
+  // apply ablations
+  if (conf.index.ablations.sherman.disable_combine)  sh.combine = false;
+  if (conf.index.ablations.sherman.disable_hocl)     sh.hocl.enable = false;
+  if (conf.index.ablations.sherman.disable_versions) { sh.enable_two_level_versions = false; sh.two_level_versioning = false; }
+  return std::make_unique<Sherman>(ctx, sh, cache_bytes);
 }
 
 void WorkloadRunner::run_workload(const WorkloadCfg& wl, const std::string& index_name, const std::string& out_dir){

@@ -2,9 +2,8 @@ cluster:
   compute_nodes: 4
   memory_nodes: 2
   threads_per_compute: 16
-  cs_cache_bytes: 268435456  # 256 MiB per compute node
+  cs_cache_bytes: 268435456
   ms_cpu_cores: 2
-
 nic:
   link_gbps: 100
   base_rtt_us: 2.0
@@ -16,8 +15,7 @@ nic:
     write_small: 9000000
   qp_per_thread: 1
   in_order_rc: true
-  # Advanced NIC
-  tb_cas_ops_per_s: 120000000
+  tb_cas_ops_per_s: 110000000
   tb_read_ops_per_s: 8500000
   tb_write_ops_per_s: 9000000
   tb_burst_ops: 64
@@ -26,57 +24,50 @@ nic:
   pcie_desc_us: 0.03
   doorbell_batch_limit: 16
   sq_depth: 512
-
 memory_server:
   rnic_onchip_bytes: 262144
   dram_latency_us: 0.6
-
 index:
-  kind: "sherman"            # "sherman"
-  node_bytes: 4096
-  leaf_entry_bytes: 24
+  kind: "sherman"
+  node_bytes: 1024
+  leaf_entry_bytes: 17
   ablations:
     sherman:
       disable_combine: false
       disable_hocl: false
       disable_versions: false
-
 sherman:
   combine_commands: true
+  two_level_versioning: false
   hocl:
     enable: true
     glt_slots: 131072
     llt_enable: true
-  two_level_versioning: true
   cache_levels: 2
-  # Advanced Sherman fidelity
   glt_hash_seed: 266681
   cas_max_retries: 16
   cas_backoff_us: 0.5
   model_glt_collisions: true
-  leaf_max_entries: -1           # default: node_bytes/leaf_entry_bytes
+  leaf_max_entries: -1
   split_threshold: 0.95
   merge_threshold: 0.30
   enable_splits: true
   enable_merges: false
-  enable_two_level_versions: true
-
+  enable_two_level_versions: false
 workloads:
-  - name: "ycsb-a"
-    ops: 5000
+  - name: "write-intensive"
+    ops: 50000
     mix: { read: 0.5, write: 0.5 }
     keyspace: 1000000
-    zipf: 0.9
+    zipf: 0.99
     range_len: 1
-
-  - name: "range-95r5w-short"
-    ops: 5000
+  - name: "read-intensive"
+    ops: 50000
     mix: { read: 0.95, write: 0.05 }
-    keyspace: 2000000
-    zipf: 0.6
-    range_len: 32
-
+    keyspace: 1000000
+    zipf: 0.99
+    range_len: 1
 metrics:
+  out_dir: "out/hier"
   ptiles: [50,95,99]
   dump_per_op_trace: true
-  out_dir: "out"

@@ -1,13 +1,12 @@
 #pragma once
 #include "sim/index.h"
 #include "sim/locks.h"
-#include <unordered_map>
-#include <vector>
-#include <cstdint>
-
+#include "sim/cache.h"
+#include "sim/metrics.h"
 #include "sim/config.h"
+#include <unordered_map>
 
-struct Sherman : Index {
+struct Sherman : public Index {
   ShermanConf conf;      // store by value (allows ablated copy)
   GLT glt;
   LLT llt;
@@ -24,7 +23,8 @@ private:
   std::uint64_t path_to_leaf(std::uint64_t key, std::vector<std::uint64_t>& nodes);
   void read_node(std::uint64_t node_id, int level, Metrics& m, SimTime& completion);
   void hocl_acquire(std::uint64_t leaf, int tid, Metrics& m, SimTime& completion);
-  void hocl_release(std::uint64_t leaf, Metrics& m, SimTime& completion);
+  void hocl_release(std::uint64_t leaf, int tid, Metrics& m, SimTime& completion);
+  void hocl_release_state_at(std::uint64_t leaf, int tid, SimTime when);
 
   int leaf_capacity() const;
   std::uint64_t glt_slot(std::uint64_t leaf) const;

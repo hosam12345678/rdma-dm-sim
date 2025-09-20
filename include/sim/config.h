@@ -53,7 +53,13 @@ enum class IndexKind { Sherman, DEX };
 
 struct ShermanConf {
   bool combine{true};
-  struct { bool enable{true}; int glt_slots{131072}; bool llt_enable{true}; } hocl;
+  struct {
+    bool enable{true};
+    int glt_slots{131072};
+    bool llt_enable{true};
+    // Local queueing cost per position in LLT (purely local, no NIC). Keep small but non-zero to model fairness handoff.
+    double llt_local_wait_us{0.0};
+  } hocl;
   bool two_level_versioning{true};
   int cache_levels{2};
 

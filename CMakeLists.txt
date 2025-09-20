@@ -15,7 +15,6 @@ add_library(simlib
   src/cache.cc
   src/locks.cc
   src/index_sherman.cc
-  src/index_dex.cc
   src/workload.cc)
 
 target_link_libraries(simlib PUBLIC yaml-cpp)

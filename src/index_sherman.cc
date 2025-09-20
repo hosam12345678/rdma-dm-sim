@@ -30,26 +30,75 @@ std::uint64_t Sherman::glt_slot(std::uint64_t leaf) const {
   return x % glt.slots;
 }
 
+// Always acquire a real lock.
+// - HOCL enabled: LLT (local fairness queue) -> GLT (on-chip CAS spin)
+// - HOCL disabled: DRAM CAS spin (no LLT), higher RTT via NIC model
 void Sherman::hocl_acquire(std::uint64_t leaf, int tid, Metrics& m, SimTime& completion){
-  if (conf.hocl.enable && conf.hocl.llt_enable) { (void)llt.try_acquire(leaf, tid); }
-  auto slot = glt_slot(leaf);
-  (void)slot;
+  const bool hocl = conf.hocl.enable;
+  const auto slot = glt_slot(leaf);
+
+  // LLT: enqueue and model local queueing delay (no NIC), to hand over fairly.
+  if (hocl && conf.hocl.llt_enable){
+    int pos = llt.enqueue_and_pos(leaf, tid);
+    if (pos > 0){
+      // completion += conf.hocl.hocl.llt_local_wait_us; // per-position unit delay (can be tuned)
+      completion += conf.hocl.llt_local_wait_us * pos;
+    }
+  }
+
+  // GLT/DRAM lock via CAS spin, NIC-timed
+  Target cas_target = hocl ? Target::RNIC_ONCHIP : Target::DRAM;
+
   int retries = 0;
-  do {
-    RdmaReq cas{Verb::CAS, Target::RNIC_ONCHIP, 8, ctx.qp, ctx.cs_id, ctx.ms_id};
-    auto c = ctx.nic->post(cas); completion = std::max(completion, c.when); m.remote_cas++;
-    bool success = (retries==0) || ( (rand()%100) < 60 );
-    if (success) break;
+  while (true){
+    RdmaReq cas{Verb::CAS, cas_target, 8, ctx.qp, ctx.cs_id, ctx.ms_id};
+    auto c = ctx.nic->post(cas);
+    completion = std::max(completion, c.when);
+    m.remote_cas++;
+
+    // If lock is free and we're allowed (head when LLT enabled), take it.
+    const bool at_head = (!hocl || !conf.hocl.llt_enable) ? true : llt.at_head(leaf, tid);
+    if (at_head && glt.owner[slot] == -1){
+      glt.owner[slot] = tid;
+      break;
+    }
+    // Else backoff and retry
     retries++;
     completion += conf.cas_backoff_us;
-  } while (retries < conf.cas_max_retries);
+    if (retries >= conf.cas_max_retries){
+      // Break after extended retries to avoid infinite loop in simulation
+      // Force acquire the lock to ensure progress
+      glt.owner[slot] = tid;
+      break;
+    }
+  }
 }
 
-void Sherman::hocl_release(std::uint64_t /*leaf*/, Metrics& m, SimTime& completion){
-  RdmaReq w{Verb::WRITE, Target::DRAM, 8, ctx.qp, ctx.cs_id, ctx.ms_id};
+// Schedule-only release (used when unlock RDMA is already part of a chain)
+void Sherman::hocl_release_state_at(std::uint64_t leaf, int tid, SimTime when){
+  auto slot = glt_slot(leaf);
+  ctx.loop->at(when, [this, leaf, tid, slot]{
+    // Free GLT owner
+    if (slot < (std::size_t)glt.owner.size() && glt.owner[slot] == tid){
+      glt.owner[slot] = -1;
+    } else {
+      // If owner mismatch, clear anyway to avoid permanent wedging in a sim
+      if (slot < (std::size_t)glt.owner.size()) glt.owner[slot] = -1;
+    }
+    // Release LLT head
+    if (conf.hocl.enable && conf.hocl.llt_enable) llt.release(leaf, tid);
+  });
+}
+
+// Post unlock (writes lock word) and schedule state release when NIC completes.
+void Sherman::hocl_release(std::uint64_t leaf, int tid, Metrics& m, SimTime& completion){
+  Target unlock_target = conf.hocl.enable ? Target::RNIC_ONCHIP : Target::DRAM;
+  RdmaReq w{Verb::WRITE, unlock_target, 8, ctx.qp, ctx.cs_id, ctx.ms_id};
   auto c = ctx.nic->post(w);
   completion = std::max(completion, c.when);
   m.remote_writes++; m.bytes_write += 8;
+
+  hocl_release_state_at(leaf, tid, c.when);
 }
 
 void Sherman::get(std::uint64_t key, Metrics& m, std::uint64_t op_id){
@@ -82,21 +131,30 @@ void Sherman::put(std::uint64_t key, Metrics& m, std::uint64_t op_id){
   SimTime start = ctx.loop->now, done = start; int tid = 0; std::uint64_t br0=m.bytes_read, bw0=m.bytes_write; auto rr0=m.remote_reads.load(), rw0=m.remote_writes.load(), rc0=m.remote_cas.load();
   std::vector<std::uint64_t> nodes; auto leaf = path_to_leaf(key, nodes);
   for (int lvl=0; lvl<(int)nodes.size(); ++lvl) read_node(nodes[lvl], lvl, m, done);
-  if (conf.hocl.enable) hocl_acquire(leaf, tid, m, done);
+
+  // Always acquire a lock (HOCL -> GLT on-chip; disabled -> DRAM)
+  hocl_acquire(leaf, tid, m, done);
+
   if (conf.combine){
+    // Combine write-back + unlock on the same QP (paper’s optimization)
+    Target unlock_target = conf.hocl.enable ? Target::RNIC_ONCHIP : Target::DRAM;
     std::vector<RdmaReq> chain = {
-      RdmaReq{Verb::WRITE, Target::DRAM, ctx.leaf_entry_bytes, ctx.qp, ctx.cs_id, ctx.ms_id},
-      RdmaReq{Verb::WRITE, Target::DRAM, 8,                    ctx.qp, ctx.cs_id, ctx.ms_id}
+      RdmaReq{Verb::WRITE, Target::DRAM,        ctx.leaf_entry_bytes, ctx.qp, ctx.cs_id, ctx.ms_id},
+      RdmaReq{Verb::WRITE, unlock_target,       8,                    ctx.qp, ctx.cs_id, ctx.ms_id}
     };
     auto c = ctx.nic->post_chain(chain); done = std::max(done, c.when);
     m.remote_writes += 2; m.bytes_write += (ctx.leaf_entry_bytes + 8);
+
+    // Schedule state release exactly when the chain completes
+    hocl_release_state_at(leaf, tid, c.when);
   } else {
     RdmaReq w{Verb::WRITE, Target::DRAM, ctx.leaf_entry_bytes, ctx.qp, ctx.cs_id, ctx.ms_id};
     auto c1 = ctx.nic->post(w); done = std::max(done, c1.when); m.remote_writes++; m.bytes_write += ctx.leaf_entry_bytes;
-    if (conf.hocl.enable) hocl_release(leaf, m, done);
+    // Post unlock and schedule release
+    hocl_release(leaf, tid, m, done);
   }
 
-  // after acquire… perform small write + unlock (already modeled)
+  // Update leaf meta (versions, occupancy, splits)
   auto& meta = leafs[leaf]; if (meta.entry_ver.empty()) meta.entry_ver.resize(leaf_capacity(), 0);
   int idx = (int)(key % leaf_capacity());
   if (conf.enable_two_level_versions) { meta.entry_ver[idx]++; }
